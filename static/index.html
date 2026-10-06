@@ -1,11 +1,20 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>字幕本地化质检</title>
-<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1080px;margin:32px auto;padding:0 18px}input,select,textarea,button{padding:7px;margin:3px}.card{border:1px solid #d9e1e8;border-radius:10px;padding:16px;margin:16px 0}pre,textarea{background:#f5f7f9;padding:12px;overflow:auto;width:100%;box-sizing:border-box}button{cursor:pointer}small{color:#667}</style></head>
-<body><h1>影视字幕本地化质检</h1><p>示例项目已含术语表。分配翻译、时间轴和复核人员后，录入带时间点的字幕与评论，再完成提交、复核、锁定和交付。</p>
-<div class="card"><h2>身份与版本</h2><input id="user" value="alice"><select id="role"><option>owner</option><option>reviewer</option><option>translator</option><option>admin</option></select><label>版本 ID <input id="version" type="number" value="1"></label><button onclick="refresh()">刷新</button><pre id="data">等待刷新…</pre></div>
-<div class="card"><h2>录入字幕</h2><textarea id="cue" rows="5">{"cue_index":1,"start_ms":1000,"end_ms":3000,"text":"海豹出现在冰面上","expected_revision":0}</textarea><button onclick="saveCue()">保存字幕</button><pre id="cueResult"></pre></div>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>字幕本地化质检交片线</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1180px;margin:32px auto;padding:0 18px}input,select,textarea,button{padding:7px;margin:3px}
+.card{border:1px solid #d9e1e8;border-radius:10px;padding:16px;margin:16px 0}pre,textarea{background:#f5f7f9;padding:12px;overflow:auto;width:100%;box-sizing:border-box}
+button{cursor:pointer}.ok{color:#17803d;font-weight:600}.bad{color:#b3261e;font-weight:600}.muted{color:#667}.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;margin-right:4px}
+.packed{background:#e6f4ea}.failed{background:#fdecea}.invalidated{background:#eceff1}.queued,.packing{background:#fff4d6}.legacy{background:#ede7f6}</style></head>
+<body><h1>影视字幕本地化质检 · 交片线</h1>
+<p>锁定版本后按渠道独立打包；同一渠道只认当前锁定版本；字幕或术语改动会让未签收包失效，已签收包保留原清单；外部回执核对清单摘要，全部渠道签收后整版才显示已交。</p>
+<div class="card"><h2>身份与版本</h2><input id="user" value="alice"><select id="role"><option>owner</option><option>reviewer</option><option>translator</option><option>admin</option></select><label>版本 ID <input id="version" type="number" value="1"></label><button onclick="refresh()">刷新</button>
+<pre id="data">等待刷新…</pre></div>
+<div class="card"><h2>录入字幕</h2><textarea id="cue" rows="4">{"cue_index":1,"start_ms":1000,"end_ms":3000,"text":"海豹出现在冰面上","expected_revision":0}</textarea><button onclick="saveCue()">保存字幕</button><pre id="cueResult"></pre></div>
 <div class="card"><h2>时间点评论</h2><input id="time" type="number" value="1200"><input id="comment" value="请复核这里的术语"><button onclick="addComment()">添加评论</button><pre id="commentResult"></pre></div>
-<div class="card"><h2>状态流转</h2><button onclick="action('submit')">提交复核</button><button onclick="review('approve')">复核通过</button><button onclick="review('reject')">退回修改</button><button onclick="action('lock')">锁定</button><button onclick="action('deliver')">交付</button><pre id="stateResult"></pre></div>
+<div class="card"><h2>版本锁定</h2><button onclick="action('submit')">提交复核</button><button onclick="review('approve')">复核通过</button><button onclick="review('reject')">退回修改</button><button onclick="action('lock')">锁定版本</button><button onclick="action('unlock')">解锁改稿（未签收包失效）</button><pre id="stateResult"></pre></div>
+<div class="card"><h2>渠道打包</h2><p class="muted">渠道列表 JSON，留 [] 表示全部启用渠道；并发同渠道请求只压一次，后来者拿占位结果。</p>
+<textarea id="channels" rows="2">[]</textarea><button onclick="pack()">发起打包批次</button><pre id="packResult"></pre></div>
+<div class="card"><h2>外部系统回执</h2><label>包 ID <input id="pkgId" type="number" value="1"></label><button onclick="buildReceipt()">用包清单生成回执</button><label class="muted"><input type="checkbox" id="tamper"> 篡改第一个文件摘要（演示拒签）</label><pre id="receiptDraft"></pre><button onclick="sendReceipt()">提交回执</button><button onclick="confirmLegacy()">确认选中的遗留记录</button><pre id="receiptResult"></pre></div>
+<div class="card"><h2>交片完成度</h2><button onclick="deliveryState()">查看整版状态</button><pre id="deliveryResult"></pre></div>
 <script>
 const auth=()=>({'Content-Type':'application/json','X-User':user.value,'X-Role':role.value});
 async function call(url,opts={}){const r=await fetch(url,opts);const j=await r.json();if(!r.ok)throw Error(j.error||r.status);return j}
@@ -13,5 +22,15 @@ async function saveCue(){try{cueResult.textContent=JSON.stringify(await call('/a
 async function addComment(){try{commentResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/comments',{method:'POST',headers:auth(),body:JSON.stringify({time_ms:+time.value,body:comment.value})}),null,2)}catch(e){commentResult.textContent=e.message}}
 async function action(name){try{stateResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/'+name,{method:'POST',headers:auth(),body:'{}'}),null,2);refresh()}catch(e){stateResult.textContent=e.message}}
 async function review(decision){try{stateResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/review',{method:'POST',headers:auth(),body:JSON.stringify({decision,comment:''})}),null,2);refresh()}catch(e){stateResult.textContent=e.message}}
-async function refresh(){try{const [p,v,c,cm,d]=await Promise.all(['/api/projects','/api/versions','/api/versions/'+version.value+'/cues','/api/versions/'+version.value+'/comments','/api/deliveries'].map(call));data.textContent=JSON.stringify({p,v,c,cm,d},null,2)}catch(e){data.textContent=e.message}}
+async function pack(){try{packResult.textContent='压包中…';const r=await call('/api/versions/'+version.value+'/packages',{method:'POST',headers:auth(),body:channels.value});packResult.textContent=JSON.stringify(r,null,2);refresh()}catch(e){packResult.textContent=e.message}}
+let draftReceipt=null;
+async function buildReceipt(){try{const ps=(await call('/api/versions/'+version.value+'/packages')).packages;const pkg=ps.find(p=>p.id===+pkgId.value);if(!pkg)throw Error('该版本下找不到包 '+pkgId.value);
+draftReceipt={external_ref:'EXT-'+pkg.id,manifest_hash:pkg.manifest_hash,files:pkg.files.map(f=>({name:f.name,sha256:f.sha256}))};
+if(tamper.checked&&draftReceipt.files[0])draftReceipt.files[0].sha256='f'.repeat(64);
+receiptDraft.textContent=JSON.stringify(draftReceipt,null,2)}catch(e){receiptDraft.textContent=e.message}}
+async function sendReceipt(){try{if(!draftReceipt)await buildReceipt();receiptResult.textContent=JSON.stringify(await call('/api/packages/'+pkgId.value+'/receipts',{method:'POST',headers:auth(),body:JSON.stringify(draftReceipt)}),null,2);deliveryState();refresh()}catch(e){receiptResult.textContent=e.message}}
+async function confirmLegacy(){try{receiptResult.textContent=JSON.stringify(await call('/api/packages/'+pkgId.value+'/confirm-legacy',{method:'POST',headers:auth(),body:'{}'}),null,2);deliveryState()}catch(e){receiptResult.textContent=e.message}}
+async function deliveryState(){try{deliveryResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/delivery-state'),null,2)}catch(e){deliveryResult.textContent=e.message}}
+async function refresh(){try{const [p,v,c,cm,d,ps,rs]=await Promise.all(['/api/projects','/api/versions','/api/versions/'+version.value+'/cues','/api/versions/'+version.value+'/comments','/api/deliveries','/api/versions/'+version.value+'/packages','/api/receipts'].map(call));data.textContent=JSON.stringify({p,v,c,cm,d,ps,rs},null,2)}catch(e){data.textContent=e.message}}
+refresh();
 </script></body></html>
