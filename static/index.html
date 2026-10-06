@@ -1,11 +1,20 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>字幕本地化质检</title>
-<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1080px;margin:32px auto;padding:0 18px}input,select,textarea,button{padding:7px;margin:3px}.card{border:1px solid #d9e1e8;border-radius:10px;padding:16px;margin:16px 0}pre,textarea{background:#f5f7f9;padding:12px;overflow:auto;width:100%;box-sizing:border-box}button{cursor:pointer}small{color:#667}</style></head>
-<body><h1>影视字幕本地化质检</h1><p>示例项目已含术语表。分配翻译、时间轴和复核人员后，录入带时间点的字幕与评论，再完成提交、复核、锁定和交付。</p>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>字幕本地化质检与交片线</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:1180px;margin:32px auto;padding:0 18px}input,select,textarea,button{padding:7px;margin:3px}.card{border:1px solid #d9e1e8;border-radius:10px;padding:16px;margin:16px 0}pre,textarea{background:#f5f7f9;padding:12px;overflow:auto;width:100%;box-sizing:border-box}button{cursor:pointer}.ok{color:#0a7d28;font-weight:600}.bad{color:#b3261e;font-weight:600}.tag{display:inline-block;padding:1px 8px;border-radius:10px;background:#eef2f6;margin-right:6px;font-size:12px}</style></head>
+<body><h1>影视字幕本地化质检 · 交片线</h1><p>锁定生成内容指纹；每个渠道按自己的规格独立压包，同一渠道同锁只压一次。字幕/术语改动让未签收包失效，已签收包保留原清单。外部回执逐文件核对 SHA-256 与清单摘要，全部渠道签收后整版才能交付。</p>
 <div class="card"><h2>身份与版本</h2><input id="user" value="alice"><select id="role"><option>owner</option><option>reviewer</option><option>translator</option><option>admin</option></select><label>版本 ID <input id="version" type="number" value="1"></label><button onclick="refresh()">刷新</button><pre id="data">等待刷新…</pre></div>
 <div class="card"><h2>录入字幕</h2><textarea id="cue" rows="5">{"cue_index":1,"start_ms":1000,"end_ms":3000,"text":"海豹出现在冰面上","expected_revision":0}</textarea><button onclick="saveCue()">保存字幕</button><pre id="cueResult"></pre></div>
 <div class="card"><h2>时间点评论</h2><input id="time" type="number" value="1200"><input id="comment" value="请复核这里的术语"><button onclick="addComment()">添加评论</button><pre id="commentResult"></pre></div>
-<div class="card"><h2>状态流转</h2><button onclick="action('submit')">提交复核</button><button onclick="review('approve')">复核通过</button><button onclick="review('reject')">退回修改</button><button onclick="action('lock')">锁定</button><button onclick="action('deliver')">交付</button><pre id="stateResult"></pre></div>
+<div class="card"><h2>状态流转</h2><button onclick="action('submit')">提交复核</button><button onclick="review('approve')">复核通过</button><button onclick="review('reject')">退回修改</button><button onclick="action('lock')">锁定（生成指纹）</button><pre id="stateResult"></pre></div>
+<div class="card"><h2>渠道规则</h2>
+<textarea id="channel" rows="3">{"code":"cinema","name":"院线数字拷贝","format":"ass","max_chars_per_cue":30,"min_display_ms":1000}</textarea>
+<button onclick="createChannel()">新增渠道</button><pre id="channelResult"></pre></div>
+<div class="card"><h2>打包批次</h2>
+<button onclick="packBatch()">整批压包（缺口续压）</button>
+<button onclick="refresh()">查看批次结果</button><pre id="batchResult"></pre>
+<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><thead><tr><th>包 ID</th><th>渠道</th><th>格式</th><th>状态</th><th>清单摘要</th><th>外部回执</th></tr></thead><tbody id="pkgRows"></tbody></table>
+</div>
+<div class="card"><h2>整版完成度与交付</h2><pre id="statusResult"></pre><button onclick="refreshStatus()">查看完成度</button><button onclick="finalDeliver()">全部签收后交付整版</button><pre id="deliverResult"></pre></div>
 <script>
 const auth=()=>({'Content-Type':'application/json','X-User':user.value,'X-Role':role.value});
 async function call(url,opts={}){const r=await fetch(url,opts);const j=await r.json();if(!r.ok)throw Error(j.error||r.status);return j}
@@ -13,5 +22,24 @@ async function saveCue(){try{cueResult.textContent=JSON.stringify(await call('/a
 async function addComment(){try{commentResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/comments',{method:'POST',headers:auth(),body:JSON.stringify({time_ms:+time.value,body:comment.value})}),null,2)}catch(e){commentResult.textContent=e.message}}
 async function action(name){try{stateResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/'+name,{method:'POST',headers:auth(),body:'{}'}),null,2);refresh()}catch(e){stateResult.textContent=e.message}}
 async function review(decision){try{stateResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/review',{method:'POST',headers:auth(),body:JSON.stringify({decision,comment:''})}),null,2);refresh()}catch(e){stateResult.textContent=e.message}}
-async function refresh(){try{const [p,v,c,cm,d]=await Promise.all(['/api/projects','/api/versions','/api/versions/'+version.value+'/cues','/api/versions/'+version.value+'/comments','/api/deliveries'].map(call));data.textContent=JSON.stringify({p,v,c,cm,d},null,2)}catch(e){data.textContent=e.message}}
+async function createChannel(){try{const versions=await call('/api/versions');const v=versions.versions.find(x=>x.id===+version.value);if(!v)throw Error('版本不存在');channelResult.textContent=JSON.stringify(await call('/api/projects/'+v.project_id+'/channels',{method:'POST',headers:auth(),body:channel.value}),null,2);refresh()}catch(e){channelResult.textContent=e.message}}
+async function packBatch(){try{batchResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/pack-batch',{method:'POST',headers:auth(),body:'{}'}),null,2);refresh()}catch(e){batchResult.textContent=e.message}}
+async function receipt(id,ok,btn){const cell=btn.parentElement;try{const p=await call('/api/packages/'+id);let files=Object.fromEntries(JSON.parse(p.manifest).files.map(f=>[f.path,f.sha256]));if(!ok)files={'subtitles.srt':'0'.repeat(64)};const payload={system_name:'demo-external',manifest_digest:ok?p.manifest_digest:'0'.repeat(64),files};const res=await call('/api/packages/'+id+'/receipt',{method:'POST',headers:auth(),body:JSON.stringify(payload)});cell.innerHTML='<span class="ok">已签收</span>';refresh()}catch(e){cell.innerHTML='<span class="bad">'+esc(e.message)+'</span>'}}
+async function confirmLegacy(id,btn){const cell=btn.parentElement;try{await call('/api/packages/'+id+'/confirm-legacy',{method:'POST',headers:auth(),body:'{}'});cell.innerHTML='<span class="ok">遗留记录已确认</span>';refresh()}catch(e){cell.innerHTML='<span class="bad">'+esc(e.message)+'</span>'}}
+async function refreshStatus(){try{statusResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/delivery-status'),null,2)}catch(e){statusResult.textContent=e.message}}
+async function finalDeliver(){try{deliverResult.textContent=JSON.stringify(await call('/api/versions/'+version.value+'/deliver',{method:'POST',headers:auth(),body:'{}'}),null,2);refresh()}catch(e){deliverResult.textContent=e.message}}
+function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function renderPackages(ps){
+  pkgRows.innerHTML=ps.map(p=>{
+    let actions='';
+    if(p.status==='ready') actions=`<button onclick="receipt(${p.id},true,this)">回执正常签收</button><button onclick="receipt(${p.id},false,this)">回执缺文件/错摘要</button>`;
+    if(p.status==='failed') actions=`<span class="bad">规格不符，批次保留已完成渠道；修复后从本渠道续压</span>`;
+    if(p.status==='invalidated') actions=`<span class="bad">字幕或术语已改动，重新压包后才能签收</span>`;
+    if(p.status==='superseded') actions=`<span>旧锁定版本，渠道只认当前锁定版本</span>`;
+    if(p.status==='signed') actions=`<span class="ok">已签收，原清单保留</span>`;
+    if(p.status==='legacy') actions=p.confirmed?`<span class="ok">遗留记录已确认</span>`:`<button onclick="confirmLegacy(${p.id},this)">确认遗留交付（确认前不计完成度）</button>`;
+    return `<tr><td>${p.id}</td><td>${esc(p.channel_code)}${p.channel_kind==='legacy'?' <span class="tag">legacy</span>':''}</td><td>${p.format||'-'}</td><td>${p.status}${p.attempt>1?` #${p.attempt}`:''}</td><td><small>${(p.manifest_digest||'').slice(0,16)}…</small></td><td>${actions}</td></tr>`;
+  }).join('');
+}
+async function refresh(){try{const [v,c,cm,ch,ps,st]=await Promise.all(['/api/versions/'+version.value,'/api/versions/'+version.value+'/cues','/api/versions/'+version.value+'/comments','/api/channels','/api/versions/'+version.value+'/packages','/api/versions/'+version.value+'/delivery-status'].map(u=>call(u).catch(e=>({error:String(e)}))));data.textContent=JSON.stringify({v,c,cm,ch,ps,st},null,2);renderPackages(ps.packages||[]);statusResult.textContent=JSON.stringify(st,null,2)}catch(e){data.textContent=e.message}}
 </script></body></html>

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,17 @@ class SubtitleQCFlowTest(unittest.TestCase):
         approved = self.db.review(self.version, "carol", {"decision": "approve", "comment": "通过"}, "reviewer")
         self.assertEqual(approved["status"], "approved")
         self.db.lock(self.version, "alice")
+        batch = self.db.pack_batch(self.version, "alice")
+        self.assertEqual(batch["failed"], [])
+        packages = {p["channel_code"]: p for p in self.db.list_packages(self.version)}
+        for code, package in packages.items():
+            manifest = json.loads(package["manifest"])
+            files = {f["path"]: f["sha256"] for f in manifest["files"]}
+            receipt = self.db.submit_receipt(package["id"], "external", {
+                "system_name": f"{code}-system", "manifest_digest": package["manifest_digest"], "files": files})
+            self.assertEqual(receipt["package"]["status"], "signed")
+        status = self.db.delivery_status(self.version)
+        self.assertTrue(status["complete"])
         delivery = self.db.deliver(self.version, "alice")
         self.assertEqual(len(delivery["snapshot_hash"]), 64)
         with self.assertRaisesRegex(DomainError, "只有草稿"):
